@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+import { createVectorStore } from "@/lib/vector-store/supabase";
 
 import { createClient } from "@supabase/supabase-js";
 import { SupabaseVectorStore } from "@langchain/community/vectorstores/supabase";
@@ -12,14 +13,18 @@ export const runtime = "edge";
 
 /**
  * This handler takes input text, splits it into chunks, and embeds those chunks
- * into a vector store for later retrieval. See the following docs for more information:
- *
- * https://js.langchain.com/v0.2/docs/how_to/recursive_text_splitter
- * https://js.langchain.com/v0.2/docs/integrations/vectorstores/supabase
+ * into a vector store for later retrieval.
  */
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const text = body.text;
+
+  if (!text) {
+    return NextResponse.json(
+      { error: "No text provided" },
+      { status: 400 }
+    );
+  }
 
   if (process.env.NEXT_PUBLIC_DEMO === "true") {
     return NextResponse.json(
@@ -34,30 +39,32 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const client = createClient(
-      process.env.SUPABASE_URL!,
-      process.env.SUPABASE_PRIVATE_KEY!,
-    );
-
+    // Create text splitter with research-optimized settings
     const splitter = RecursiveCharacterTextSplitter.fromLanguage("markdown", {
-      chunkSize: 256,
-      chunkOverlap: 20,
+      chunkSize: 1000, // Larger chunks for research context
+      chunkOverlap: 200, // More overlap for better context preservation
+      separators: ["\n\n", "\n", ".", "!", "?", ",", " ", ""], // Prioritize paragraph breaks
     });
 
+    // Split the text into documents
     const splitDocuments = await splitter.createDocuments([text]);
 
-    const vectorstore = await SupabaseVectorStore.fromDocuments(
-      splitDocuments,
-      new OpenAIEmbeddings(),
-      {
-        client,
-        tableName: "documents",
-        queryName: "match_documents",
-      },
-    );
+    // Get vector store instance
+    const vectorstore = await createVectorStore();
 
-    return NextResponse.json({ ok: true }, { status: 200 });
+    // Add documents to vector store
+    await vectorstore.addDocuments(splitDocuments);
+
+    return NextResponse.json({ 
+      ok: true,
+      chunks: splitDocuments.length,
+      message: "Research text successfully indexed"
+    }, { status: 200 });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    console.error("Error during ingestion:", e);
+    return NextResponse.json({ 
+      error: e.message,
+      details: "Failed to process and index the research text"
+    }, { status: 500 });
   }
 }

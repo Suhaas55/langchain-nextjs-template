@@ -1,0 +1,36 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+- Always prioritize simplicity and clarity over cleverness. Build something clean, not fancy.
+- Keep components small and modular — aim for files under 200–300 lines and functions under 50 lines.
+- Avoid duplication of logic. Reuse utilities or shared hooks/components whenever possible.
+- Stick to the current tech stack unless explicitly approved. No introducing new frameworks or major tools mid-feature.
+- Do not touch unrelated code unless it's directly affecting the current task or feature.
+
+- Respect the different environments (dev/test/prod).
+- Never modify or overwrite `.env` files without explicit instruction.
+- All API keys and model secrets must come from environment variables — never hardcoded.
+- Scripts intended for one-time use (e.g., migrations, CLI hacks) go into a `/scripts` directory, not mixed into production code.
+
+- Isolate LLM logic in clearly named files like `llm.ts`, `summarize.ts`, or `prompt-utils.ts`.
+- Keep prompts modular and adjustable. Use constants or external files for large or reusable prompts.
+- Document or comment input/output format expectations near model usage.
+- Avoid tightly coupling AI model calls with UI logic — separate concerns.
+
+- Only use mocked data in test environments — never in dev or prod.
+- Stub logic only inside isolated test files. Never commit code that fakes functionality as part of the app.
+- Write clear and thorough tests for critical logic like summarization response handling, error states, and model fallback.
+- If something is unfinished or experimental, wrap it in feature flags or leave `// TODO` with clear notes.
+
+- Keep the folder structure clean and consistent — group related logic under `/lib`, `/utils`, `/api`, `/components`, etc.
+- Use kebab-case for filenames and camelCase for functions/variables.
+- Avoid bloated functions or components — extract to helpers when needed.
+- Only comment "why", not "what". Explain AI choices, tricky logic, or external API workarounds.
+
+- Write code with extensibility in mind — support future features like:
+  - Switching LLM providers (OpenAI, Gemini, Claude)
+  - Handling file uploads alongside URLs/text
+  - Different summarization styles (bullet, TLDR, structured)
+- Keep clear markers for future integration points with the Super Agent, user auth, or app marketplace connection logic.
