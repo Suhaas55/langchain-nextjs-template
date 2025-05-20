@@ -5,6 +5,11 @@ import { createVectorStore } from "@/lib/vector-store/supabase";
 import { summaryPrompt, tldrPrompt, bulletPrompt } from "@/lib/prompts/summary";
 import { RunnableSequence } from "@langchain/core/runnables";
 import { StringOutputParser } from "@langchain/core/output_parsers";
+import { createClient } from "@supabase/supabase-js";
+import { OpenAIEmbeddings } from "@langchain/openai";
+import { SupabaseVectorStore } from "@langchain/community/vectorstores/supabase";
+import { ChatOpenAI } from "@langchain/openai";
+import { PromptTemplate } from "@langchain/core/prompts";
 
 export const runtime = "edge";
 
@@ -21,84 +26,137 @@ const formatVercelMessages = (messages: VercelChatMessage[]) => {
   }));
 };
 
+// Initialize Supabase client
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+console.log("Supabase URL:", supabaseUrl);
+console.log("Supabase Key exists:", !!supabaseKey);
+
+if (!supabaseUrl || !supabaseKey) {
+  throw new Error("Missing Supabase environment variables");
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+const SUMMARY_PROMPT = PromptTemplate.fromTemplate(`
+You are a research paper summarizer. Given the following research text, provide a {summaryType} summary:
+
+{context}
+
+Summary Type: {summaryType}
+- For "full": Provide a comprehensive summary covering all key points
+- For "tldr": Provide a very brief summary in 2-3 sentences
+- For "bullet": Provide key points in bullet format
+
+Summary:
+`);
+
 export async function POST(req: NextRequest) {
   try {
+    console.log("Starting chat retrieval process...");
+    
     const body = await req.json();
+    console.log("Request body:", { 
+      messagesCount: body.messages?.length,
+      summaryType: body.summaryType 
+    });
+    
     const { messages, summaryType = "full" } = body;
-    const previousMessages = messages.slice(0, -1);
+
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      console.error("No messages provided in request");
+      return NextResponse.json(
+        { error: "No messages provided" },
+        { status: 400 }
+      );
+    }
+
     const currentMessageContent = messages[messages.length - 1].content;
+    console.log("Current message content:", currentMessageContent);
 
-    // Initialize LLM with fallback support
-    let model = createOpenRouterChat();
-    let retryCount = 0;
-    const maxRetries = 2;
-
-    // Get vector store instance
-    const vectorstore = await createVectorStore();
-
-    // Create retriever
-    const retriever = vectorstore.asRetriever({
-      k: 5, // Number of chunks to retrieve
+    console.log("Initializing embeddings...");
+    // Initialize embeddings
+    const embeddings = new OpenAIEmbeddings({
+      openAIApiKey: process.env.OPENROUTER_API_KEY,
+      configuration: {
+        baseURL: "https://openrouter.ai/api/v1",
+        defaultHeaders: {
+          "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL,
+          "X-Title": "Research Summarizer",
+        },
+      },
     });
 
-    // Select prompt based on summary type
-    const getPrompt = () => {
-      switch (summaryType) {
-        case "tldr":
-          return tldrPrompt;
-        case "bullet":
-          return bulletPrompt;
-        default:
-          return summaryPrompt;
-      }
-    };
-
-    // Create summarization chain
-    const summarizationChain = RunnableSequence.from([
+    console.log("Initializing vector store...");
+    // Initialize vector store
+    const vectorStore = await SupabaseVectorStore.fromExistingIndex(
+      embeddings,
       {
-        context: retriever.pipe(combineDocumentsFn),
+        client: supabase,
+        tableName: "documents",
+      }
+    );
+
+    console.log("Searching for relevant documents...");
+    // Search for relevant documents
+    const results = await vectorStore.similaritySearch(currentMessageContent, 3);
+    console.log(`Found ${results.length} relevant documents`);
+    const context = results.map((doc) => doc.pageContent).join("\n\n");
+
+    console.log("Initializing chat model...");
+    // Initialize chat model
+    const model = new ChatOpenAI({
+      openAIApiKey: process.env.OPENROUTER_API_KEY,
+      configuration: {
+        baseURL: "https://openrouter.ai/api/v1",
+        defaultHeaders: {
+          "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL,
+          "X-Title": "Research Summarizer",
+        },
       },
-      getPrompt(),
+      modelName: "openai/gpt-3.5-turbo",
+    });
+
+    console.log("Creating chain...");
+    // Create chain
+    const chain = RunnableSequence.from([
+      {
+        context: () => context,
+        summaryType: () => summaryType,
+      },
+      SUMMARY_PROMPT,
       model,
       new StringOutputParser(),
     ]);
 
-    // Execute chain with retry logic
-    let result;
-    while (retryCount <= maxRetries) {
-      try {
-        result = await summarizationChain.invoke({
-          question: currentMessageContent,
-        });
-        break;
-      } catch (error) {
-        if (retryCount === maxRetries) throw error;
-        model = createOpenRouterChat(getFallbackModel(model.modelName));
-        retryCount++;
-      }
-    }
+    console.log("Generating summary...");
+    // Generate summary
+    const summary = await chain.invoke({});
+    console.log("Summary generated successfully");
 
     // Create streaming response
     const stream = new ReadableStream({
       start(controller) {
-        controller.enqueue(result);
+        controller.enqueue(summary);
         controller.close();
       },
     });
 
-    return new StreamingTextResponse(stream, {
-      headers: {
-        "x-message-index": (previousMessages.length + 1).toString(),
-      },
+    return new StreamingTextResponse(stream);
+  } catch (error: any) {
+    console.error("Error during summarization:", {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
     });
-  } catch (e: any) {
-    console.error("Error during summarization:", e);
     return NextResponse.json(
       { 
-        error: e.message,
-        details: "Failed to generate summary"
+        success: false,
+        error: error.message || "Failed to generate summary",
+        details: error.stack
       },
-      { status: e.status ?? 500 }
+      { status: 500 }
     );
   }
 }
